@@ -6,6 +6,7 @@ Sandboxed Claude Code environment running in a Lima VM (Ubuntu 24.04 ARM64) on m
 
 - **Lima VM** — Ubuntu 24.04 server on Apple's Virtualization.framework (VZ)
 - **Claude Code** — Anthropic's CLI, installed inside the VM
+- **Audio** — VirtIO sound device passed through to macOS speakers
 - **Shared folder** — `/home/claude` in VM shared with Mac as `~/claude-workspace`
 - **Isolation** — Claude Code runs inside a VM with access only to the shared folder
 
@@ -57,9 +58,30 @@ Claude Code runs inside this VM, so all file reads, writes, and shell commands a
 | CPUs | 4 |
 | Memory | 4 GiB |
 | Disk | 40 GiB |
+| Audio | VirtIO sound (VZ) -> macOS speakers |
 | Shared folder | `/home/claude` <-> `~/claude-workspace` |
 
 Edit `linux.yaml` to adjust resources before creating the VM.
+
+## Verifying Audio
+
+```bash
+limactl shell linux
+
+# Check sound card
+sudo aplay -l
+# Should show: card 1: SoundCard_1 [VirtIO SoundCard]
+
+# Play a test tone (should come through your Mac speakers)
+sudo speaker-test -D plughw:1,0 -t sine -f 440 -l 1 -p 2
+```
+
+> **Note:** The `audio.device` field is marked experimental in Lima 2.0.3. If `aplay -l` shows no devices, verify `linux-modules-extra` is installed and `virtio_snd` is loaded:
+>
+> ```bash
+> sudo apt-get install -y linux-modules-extra-$(uname -r)
+> sudo modprobe virtio_snd
+> ```
 
 ## VM Management
 
@@ -95,6 +117,10 @@ limactl list
 **VM won't start:** Make sure no other Lima instance named `linux` exists. Run `limactl delete linux --force` first.
 
 **Shared folder not visible:** The VM's `/home/claude` is reverse-mounted to `~/claude-workspace` on macOS. Ensure the VM is running (`limactl list`).
+
+**No audio:** The Ubuntu cloud image doesn't ship `linux-modules-extra`. The provisioning script installs it, but if it fails, run manually: `sudo apt-get install -y linux-modules-extra-$(uname -r) && sudo modprobe virtio_snd`
+
+**aplay works with sudo but not as claude:** Log out and back in (`exit` then `limactl shell linux`) to refresh group membership after provisioning.
 
 **Claude Code not found after install:** Run `source ~/.bashrc` or start a new shell session.
 
