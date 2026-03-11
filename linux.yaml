@@ -1,0 +1,44 @@
+# Lima VM: Sandboxed Claude Code Environment
+# Ubuntu 24.04 ARM64 — minimal, single shared folder
+#
+# Tested on: macOS + Apple Silicon (M4)
+# Lima 2.0.3, vmType: vz
+
+# VZ: native Apple Virtualization.framework — faster than QEMU on Apple Silicon
+vmType: vz
+
+images:
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+    arch: "aarch64"
+
+user:
+  name: claude
+  uid: 1000
+  home: "/home/claude"
+  shell: "/bin/bash"
+
+cpus: 4
+memory: 4096MiB
+disk: 40GiB
+
+# Single shared folder: ~/claude-workspace on Mac <-> /home/claude in VM
+mounts:
+  - location: "~/claude-workspace"
+    mountPoint: "/home/claude"
+    reverse: true
+    writable: true
+
+# Provision the guest with essential packages
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eux -o pipefail
+
+      # Set hostname
+      hostnamectl set-hostname linux
+      sed -i 's/lima-linux/linux/g' /etc/hosts
+
+      # Install essential CLI tools
+      apt-get update -qq
+      apt-get install -y -qq curl git zip jq tree tmux wget python3-venv
