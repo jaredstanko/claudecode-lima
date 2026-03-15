@@ -28,12 +28,12 @@ cd claudecode-lima
 brew install lima
 
 # 3. Create and start the VM
-limactl create --name=linux linux.yaml
-limactl start linux
+limactl create --name=claudecode claudecode.yaml
+limactl start claudecode
 
 # 4. Copy the install script into the VM and run it
-limactl cp install.sh linux:~/install.sh
-limactl shell linux
+limactl cp install.sh claudecode:~/install.sh
+limactl shell claudecode
 bash ~/install.sh
 ```
 
@@ -54,19 +54,19 @@ Claude Code runs inside this VM, so all file reads, writes, and shell commands a
 | VM engine | VZ (Apple Virtualization.framework) |
 | Image | Ubuntu 24.04 ARM64 cloud image |
 | User | `claude` (uid 1000) |
-| Hostname | `linux` |
+| Hostname | `claudecode` |
 | CPUs | 4 |
 | Memory | 4 GiB |
 | Disk | 40 GiB |
 | Audio | VirtIO sound (VZ) -> macOS speakers |
 | Shared folder | `/home/claude` <-> `~/claude-workspace` |
 
-Edit `linux.yaml` to adjust resources before creating the VM.
+Edit `claudecode.yaml` to adjust resources before creating the VM.
 
 ## Verifying Audio
 
 ```bash
-limactl shell linux
+limactl shell claudecode
 
 # Check sound card
 sudo aplay -l
@@ -87,18 +87,18 @@ sudo speaker-test -D plughw:1,0 -t sine -f 440 -l 1 -p 2
 
 ```bash
 # Shell into the VM
-limactl shell linux
+limactl shell claudecode
 
 # Stop the VM
-limactl stop linux
+limactl stop claudecode
 
 # Start it again
-limactl start linux
+limactl start claudecode
 
 # Delete and recreate
-limactl delete linux --force
-limactl create --name=linux linux.yaml
-limactl start linux
+limactl delete claudecode --force
+limactl create --name=claudecode claudecode.yaml
+limactl start claudecode
 
 # List VMs
 limactl list
@@ -114,13 +114,13 @@ limactl list
 
 ## Troubleshooting
 
-**VM won't start:** Make sure no other Lima instance named `linux` exists. Run `limactl delete linux --force` first.
+**VM won't start:** Make sure no other Lima instance named `claudecode` exists. Run `limactl delete claudecode --force` first.
 
 **Shared folder not visible:** The VM's `/home/claude` is reverse-mounted to `~/claude-workspace` on macOS. Ensure the VM is running (`limactl list`).
 
 **No audio:** The Ubuntu cloud image doesn't ship `linux-modules-extra`. The provisioning script installs it, but if it fails, run manually: `sudo apt-get install -y linux-modules-extra-$(uname -r) && sudo modprobe virtio_snd`
 
-**aplay works with sudo but not as claude:** Log out and back in (`exit` then `limactl shell linux`) to refresh group membership after provisioning.
+**aplay works with sudo but not as claude:** Log out and back in (`exit` then `limactl shell claudecode`) to refresh group membership after provisioning.
 
 **Claude Code not found after install:** Run `source ~/.bashrc` or start a new shell session.
 

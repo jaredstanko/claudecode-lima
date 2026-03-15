@@ -1,5 +1,5 @@
-# Lima VM: Sandboxed Claude Code Environment
-# Ubuntu 24.04 ARM64 — minimal, single shared folder
+# Lima VM: claudecode
+# Ubuntu 24.04 ARM64 — sandboxed Claude Code environment, single shared folder
 #
 # Tested on: macOS + Apple Silicon (M4)
 # Lima 2.0.3, vmType: vz
@@ -40,8 +40,8 @@ provision:
       set -eux -o pipefail
 
       # Set hostname
-      hostnamectl set-hostname linux
-      sed -i 's/lima-linux/linux/g' /etc/hosts
+      hostnamectl set-hostname claudecode
+      sed -i 's/lima-claudecode/claudecode/g' /etc/hosts
 
       # Cloud images lack linux-modules-extra — needed for virtio_snd driver
       apt-get update -qq
