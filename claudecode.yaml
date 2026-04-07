@@ -1,14 +1,15 @@
 # Lima VM: claudecode
-# Ubuntu 24.04 ARM64 — sandboxed Claude Code environment, single shared folder
+# Ubuntu 24.04 ARM64 with audio passthrough
 #
 # Tested on: macOS + Apple Silicon (M4)
-# Lima 2.0.3, vmType: vz
+# Lima 2.0.3, vmType: vz, audio.device: vz
 
-# VZ: native Apple Virtualization.framework — faster than QEMU on Apple Silicon
+# VZ: native Apple Virtualization.framework -- faster than QEMU on Apple Silicon
 vmType: vz
 
 images:
-  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+  # Pinned to date-stamped release (not floating "release" symlink).
+  - location: "https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-arm64.img"
     arch: "aarch64"
 
 user:
@@ -19,31 +20,53 @@ user:
 
 cpus: 4
 memory: 4096MiB
-disk: 40GiB
+disk: 50GiB
 
-# Single shared folder: ~/claude-workspace on Mac <-> /home/claude in VM
 mounts:
-  - location: "~/claude-workspace"
-    mountPoint: "/home/claude"
-    reverse: true
+  - location: "~/claudecode-workspace/claude-home"
+    mountPoint: "/home/claude/.claude"
+    writable: true
+  - location: "~/claudecode-workspace/data"
+    mountPoint: "/home/claude/data"
+    writable: true
+  - location: "~/claudecode-workspace/exchange"
+    mountPoint: "/home/claude/exchange"
+    writable: true
+  - location: "~/claudecode-workspace/portal"
+    mountPoint: "/home/claude/portal"
+    writable: true
+  - location: "~/claudecode-workspace/work"
+    mountPoint: "/home/claude/work"
+    writable: true
+  - location: "~/claudecode-workspace/upstream"
+    mountPoint: "/home/claude/upstream"
     writable: true
 
-# Audio: VZ virtio sound device → macOS host speakers
+# Networking: vzNAT gives the guest a routable IP from the host.
+# portForwards maps guest 8080 -> localhost:8080 for the portal.
+networks:
+  - vzNAT: true
+
+portForwards:
+  - guestPort: 8080
+    hostIP: "127.0.0.1"
+
+# Audio: VZ virtio sound device -> macOS host speakers
 audio:
   device: vz
 
-# Provision the guest with audio drivers and essential packages
+# Provision: hardware/kernel setup only. All userland tools are in provision-vm.sh.
 provision:
   - mode: system
     script: |
       #!/bin/bash
       set -eux -o pipefail
 
-      # Set hostname
+      # Set hostname (Lima defaults to lima-<instance>, override to just "claudecode")
       hostnamectl set-hostname claudecode
       sed -i 's/lima-claudecode/claudecode/g' /etc/hosts
 
-      # Cloud images lack linux-modules-extra — needed for virtio_snd driver
+      # Cloud images lack linux-modules-extra -- needed for virtio_snd driver
       apt-get update -qq
       apt-get install -y -qq linux-modules-extra-$(uname -r)
 
@@ -52,7 +75,7 @@ provision:
       echo "virtio_snd" >> /etc/modules
 
       # Install ALSA and PulseAudio for audio playback
-      apt-get install -y -qq alsa-utils pulseaudio pulseaudio-utils
+      apt-get install -y -qq alsa-utils pulseaudio pulseaudio-utils kitty-terminfo
 
       # Enable PulseAudio system-wide service (headless VM, no user session)
       mkdir -p /etc/pulse/system.pa.d
@@ -83,6 +106,4 @@ provision:
       # Enable and start PulseAudio
       systemctl daemon-reload
       systemctl enable pulseaudio.service
-
-      # Install essential CLI tools
-      apt-get install -y -qq curl git zip jq tree tmux wget python3-venv imagemagick ffmpeg
+      systemctl start pulseaudio.service || true

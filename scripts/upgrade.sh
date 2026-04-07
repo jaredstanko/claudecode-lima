@@ -1,0 +1,246 @@
+#!/bin/bash
+# Claude Code Lima -- Upgrade existing installation
+# Safe to run on an existing VM without losing data.
+#
+# What this upgrades:
+#   - Host tools (Lima, kitty via brew)
+#   - ClaudeCode-Status menu bar app (rebuilt from source)
+#   - VM networking (adds vzNAT + port forwarding if missing)
+#   - VM-side tools, aliases, and .bashrc environment
+#   - Claude Code (migrates npm->native if needed, runs claude update)
+#
+# What this does NOT touch:
+#   - Your data in ~/claudecode-workspace/
+#   - Your Claude Code authentication and sessions
+#   - Your configuration (~/.claude/ inside the VM)
+#   - Your work/ directory
+#
+# Usage:
+#   ./scripts/upgrade.sh                  # Upgrade default instance
+#   ./scripts/upgrade.sh --name=v2        # Upgrade named instance
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Source shared instance configuration
+# shellcheck source=common.sh
+source "$SCRIPT_DIR/common.sh"
+
+STEP=0
+TOTAL=6
+
+BOLD='\033[1m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+step() {
+  STEP=$((STEP + 1))
+  echo ""
+  echo -e "${CYAN}[${STEP}/${TOTAL}]${NC} ${BOLD}$1${NC}"
+}
+
+ok()   { echo -e "        ${GREEN}✓${NC} $1"; }
+skip() { echo -e "        ${YELLOW}⊘${NC} $1 (already up to date)"; }
+
+echo ""
+echo -e "${BOLD}${CYAN}===============================================${NC}"
+echo -e "${BOLD}  Sandbox My AI -- Claude Code Lima Upgrade${NC}"
+if [ -n "$INSTANCE_SUFFIX" ]; then
+  echo -e "${BOLD}  Instance: ${CYAN}${INSTANCE_NAME}${NC}"
+fi
+echo -e "${BOLD}${CYAN}===============================================${NC}"
+echo ""
+echo "  This upgrades your existing installation without losing data."
+echo "  Your workspace, config, and sessions are preserved."
+echo ""
+
+# --- Step 1: Upgrade host tools ---
+
+step "Upgrading host tools..."
+
+if command -v brew &>/dev/null; then
+  brew upgrade lima 2>/dev/null && ok "Lima upgraded" || skip "Lima"
+  brew upgrade --cask kitty 2>/dev/null && ok "kitty upgraded" || skip "kitty"
+else
+  skip "Homebrew not found -- skipping tool upgrades"
+fi
+
+# --- Step 2: Ensure shared directories exist ---
+
+step "Checking shared directories..."
+
+DIRS=(claude-home data exchange portal work upstream)
+CREATED=0
+
+for dir in "${DIRS[@]}"; do
+  if [ ! -d "$WORKSPACE/$dir" ]; then
+    mkdir -p "$WORKSPACE/$dir"
+    CREATED=$((CREATED + 1))
+  fi
+done
+
+if [ $CREATED -gt 0 ]; then
+  ok "Created $CREATED missing directories in $WORKSPACE/"
+else
+  skip "All directories exist"
+fi
+
+# --- Step 3: Update VM networking ---
+
+step "Checking VM networking..."
+
+# Verify VM exists
+VM_STATUS=$(cc_vm_status)
+if [ -z "$VM_STATUS" ]; then
+  echo -e "        ${YELLOW}!${NC}  No VM named '${VM_NAME}' found. Run ./install.sh for a fresh install."
+  exit 1
+fi
+
+# Check the actual lima config for vzNAT
+LIMA_CONFIG="$HOME/.lima/${VM_NAME}/lima.yaml"
+if [ -f "$LIMA_CONFIG" ] && grep -q "vzNAT" "$LIMA_CONFIG"; then
+  skip "vzNAT networking already configured"
+else
+  echo "        Adding vzNAT networking and port forwarding..."
+  echo "        This requires stopping and restarting the VM."
+  echo ""
+
+  if [ "$VM_STATUS" = "Running" ]; then
+    echo "        Stopping VM..."
+    limactl stop "$VM_NAME"
+    ok "VM stopped"
+  fi
+
+  # Add vzNAT and port forwarding
+  limactl edit "$VM_NAME" --network "vzNAT" --set ".portForwards = [{\"guestPort\": ${PORTAL_PORT}, \"hostIP\": \"127.0.0.1\"}]"
+  ok "vzNAT + port forwarding added"
+
+  echo "        Starting VM..."
+  limactl start "$VM_NAME"
+  ok "VM restarted with new networking"
+fi
+
+# Make sure VM is running for remaining steps
+VM_STATUS=$(cc_vm_status)
+if [ "$VM_STATUS" != "Running" ]; then
+  echo "        Starting VM..."
+  limactl start "$VM_NAME"
+  ok "VM started"
+fi
+
+# --- Step 4: Update VM-side tools and aliases ---
+
+step "Updating VM tools and aliases..."
+
+# Copy latest provision script
+limactl cp "$SCRIPT_DIR/provision-vm.sh" "$VM_NAME":/home/claude/provision-vm.sh
+
+# Re-run the .bashrc environment block from provision-vm.sh (idempotent),
+# then update system packages
+limactl shell "$VM_NAME" bash -c '
+  SENTINEL="# --- Claude Code environment (managed by provision-vm.sh) ---"
+  ENV_BLOCK="
+# --- Claude Code environment (managed by provision-vm.sh) ---
+
+# Bun
+export BUN_INSTALL=\"\$HOME/.bun\"
+export PATH=\"\$BUN_INSTALL/bin:\$PATH\"
+
+# Claude Code
+export PATH=\"\$HOME/.claude/bin:\$PATH\"
+
+# Local binaries (pip --user, etc.)
+export PATH=\"\$HOME/.local/bin:\$PATH\"
+
+# Go
+export PATH=\"\$HOME/go/bin:\$PATH\"
+
+# Node global (npm install -g)
+export PATH=\"\$HOME/.npm-global/bin:\$PATH\"
+
+# Terminal -- kitty-terminfo is installed in the VM
+export TERM=xterm-kitty
+
+# Default editor
+export EDITOR=nano
+
+# --- end Claude Code environment ---
+"
+
+  for rcfile in ~/.bashrc ~/.zshrc; do
+    touch "$rcfile"
+    if grep -qF "$SENTINEL" "$rcfile" 2>/dev/null; then
+      sed -i "/$SENTINEL/,/# --- end Claude Code environment ---/d" "$rcfile"
+    fi
+    echo "$ENV_BLOCK" >> "$rcfile"
+  done
+
+  echo "[+] Claude Code environment block updated in .bashrc and .zshrc"
+
+  # Update system packages
+  sudo apt-get update -qq 2>/dev/null
+  sudo apt-get upgrade -y -qq 2>/dev/null
+  echo "[+] System packages updated"
+'
+ok "VM environment and packages updated"
+
+# --- Step 5: Upgrade Claude Code in VM ---
+
+step "Upgrading Claude Code in VM..."
+
+limactl shell "$VM_NAME" bash -lc '
+  CLAUDE_PATH=$(command -v claude 2>/dev/null || echo "")
+
+  if [ -z "$CLAUDE_PATH" ]; then
+    echo "[!] Claude Code not found -- installing native..."
+    curl -fsSL https://claude.ai/install.sh | bash
+  elif echo "$CLAUDE_PATH" | grep -qE "node_modules|npm|lib/node_modules"; then
+    echo "[!] Claude Code installed via npm (old method): $CLAUDE_PATH"
+    echo "[!] Removing npm version and installing native..."
+    npm uninstall -g @anthropic-ai/claude-code 2>/dev/null || true
+    bun remove -g @anthropic-ai/claude-code 2>/dev/null || true
+    curl -fsSL https://claude.ai/install.sh | bash
+  else
+    echo "[=] Claude Code already native: $CLAUDE_PATH"
+    echo "[+] Running claude update..."
+    claude update 2>/dev/null || echo "[!] claude update not available -- already latest or manual update needed"
+  fi
+'
+ok "Claude Code up to date"
+
+# --- Step 6: Rebuild menu bar app ---
+
+step "Rebuilding ${APP_NAME} menu bar app..."
+
+cd "$SCRIPT_DIR/../menubar"
+bash build.sh --install --vm-name="$VM_NAME" --port="$PORTAL_PORT" --app-name="$APP_NAME"
+ok "${APP_NAME} rebuilt and installed"
+
+# Relaunch
+open "/Applications/${APP_BUNDLE}" 2>/dev/null || true
+ok "${APP_NAME} running"
+cd "$SCRIPT_DIR"
+
+# --- Done ---
+
+echo ""
+echo -e "${BOLD}${GREEN}===============================================${NC}"
+echo -e "${BOLD}${GREEN}  Upgrade complete!${NC}"
+echo -e "${BOLD}${GREEN}===============================================${NC}"
+echo ""
+echo "  What was preserved:"
+echo "    * All files in $WORKSPACE/"
+echo "    * Claude Code authentication"
+echo "    * Configuration (~/.claude/)"
+echo "    * Claude Code sessions"
+echo ""
+echo "  What was updated:"
+echo "    * Host tools (Lima, kitty)"
+echo "    * ${APP_NAME} menu bar app"
+echo "    * VM networking (vzNAT -> localhost:${PORTAL_PORT})"
+echo "    * VM system packages and aliases"
+echo "    * Portal URL: http://localhost:${PORTAL_PORT}"
+echo ""
