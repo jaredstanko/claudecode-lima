@@ -75,7 +75,7 @@ fi
 
 retry "sudo apt-get update -qq"
 # shellcheck disable=SC2086
-retry "sudo apt-get install -y -qq jq fzf ripgrep fd-find sqlite3 tmux bat ffmpeg curl wget imagemagick nmap whois dnsutils net-tools traceroute mtr texlive-latex-base texlive-fonts-recommended pandoc golang-go python3 python3-pip python3-venv build-essential git zip unzip tree htop kitty-terminfo ca-certificates gnupg espeak-ng"
+retry "sudo apt-get install -y -qq jq fzf ripgrep fd-find sqlite3 tmux bat ffmpeg curl wget imagemagick nmap whois dnsutils net-tools traceroute mtr texlive-latex-base texlive-fonts-recommended pandoc golang-go python3 python3-pip python3-venv build-essential git zip unzip tree htop kitty-terminfo ca-certificates gnupg"
 log "System packages installed"
 
 if [ "$NODE_NEEDS_SETUP" = true ]; then
@@ -99,60 +99,6 @@ else
   uv tool install yt-dlp
   log "yt-dlp installed via uv: $(yt-dlp --version 2>/dev/null || echo 'installed')"
 fi
-
-# Install 'say' shim -- Linux replacement for macOS 'say' command.
-# Fallback chain: Kokoro (if running) -> espeak-ng -> silence.
-mkdir -p "$HOME/.local/bin"
-cat > "$HOME/.local/bin/say" <<'SAYSHIM'
-#!/bin/bash
-# say -- Linux shim for macOS 'say' command
-# Fallback: Kokoro TTS -> espeak-ng -> silence
-TEXT="$*"
-[ -z "$TEXT" ] && exit 0
-
-# Try Kokoro TTS if running
-if curl -sf http://localhost:7880/health >/dev/null 2>&1; then
-  TMPFILE=$(mktemp /tmp/say-XXXXXX.mp3)
-  if curl -s -X POST http://localhost:7880/tts \
-    -H "Content-Type: application/json" \
-    -d "{\"text\": \"$TEXT\"}" -o "$TMPFILE" 2>/dev/null && [ -s "$TMPFILE" ]; then
-    PULSE_SERVER=unix:/run/pulse/native ffplay -nodisp -autoexit -loglevel quiet "$TMPFILE" 2>/dev/null
-    rm -f "$TMPFILE"
-    exit 0
-  fi
-  rm -f "$TMPFILE"
-fi
-
-# Fall back to espeak-ng
-if command -v espeak-ng >/dev/null 2>&1; then
-  PULSE_SERVER=unix:/run/pulse/native espeak-ng "$TEXT" 2>/dev/null
-  exit 0
-fi
-SAYSHIM
-chmod +x "$HOME/.local/bin/say"
-log "Linux 'say' shim installed (Kokoro -> espeak-ng fallback)"
-
-# Install 'afplay' shim -- Linux replacement for macOS audio player.
-# Wraps ffplay with PulseAudio socket so any code calling afplay just works.
-cat > "$HOME/.local/bin/afplay" <<'AFSHIM'
-#!/bin/bash
-# afplay -- Linux shim for macOS afplay command
-# Routes audio through ffplay -> PulseAudio -> VM audio device -> Mac speakers
-FILE=""
-VOLUME="1.0"
-while [ $# -gt 0 ]; do
-  case "$1" in
-    -v) VOLUME="$2"; shift 2 ;;
-    -*) shift ;;
-    *) FILE="$1"; shift ;;
-  esac
-done
-[ -z "$FILE" ] || [ ! -f "$FILE" ] && exit 1
-SDL_VOL=$(awk "BEGIN {printf \"%d\", $VOLUME * 100}")
-PULSE_SERVER=unix:/run/pulse/native ffplay -nodisp -autoexit -volume "$SDL_VOL" -loglevel quiet "$FILE" 2>/dev/null
-AFSHIM
-chmod +x "$HOME/.local/bin/afplay"
-log "Linux 'afplay' shim installed (ffplay + PulseAudio)"
 
 # --- Step 2: Bun ---
 step "2/5" "Installing Bun..."
